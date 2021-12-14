@@ -3,7 +3,8 @@
 -define(HDR_SIGN, "tkc1:").
 -define(PTERM_KEY(Key), {?MODULE, Key}).
 -define(KEY_BY_NAME(KeyName), ?PTERM_KEY({key_name, KeyName})).
--define(KEY_NAME_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_by_authority, AuthorityID})).
+-define(KEY_NAME_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_of_authority, AuthorityID})).
+-define(AUTHORITY_BY_KEY_NAME(KeyName), ?PTERM_KEY({authority_of_keyname, KeyName})).
 
 %%
 
@@ -68,8 +69,8 @@ init(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
     {ok, token_data()} | {error, {invalid_token, Reason :: term()} | key_not_found}.
 verify(Token) ->
     case do_verify(Token) of
-        {ok, AuthDataID} ->
-            construct_token_data(AuthDataID, undefined);
+        {ok, AuthDataID, KeyName} ->
+            construct_token_data(AuthDataID, get_authority_by_key_name(KeyName));
         {error, _} = Error ->
             Error
     end.
@@ -85,7 +86,11 @@ issue(#{type := compact, id := AuthDataID, authority_id := AuthorityID}) ->
 do_verify(<<?HDR_SIGN, KeyNameSz:8, Rest/binary>>) ->
     try
         <<KeyNameEncoded:(KeyNameSz)/binary, TokenBody/binary>> = Rest,
-        get_token_id(get_key_by_name(base64:decode(KeyNameEncoded)), TokenBody)
+        KeyName = base64:decode(KeyNameEncoded),
+        case get_token_id(get_key_by_name(KeyName), TokenBody) of
+            {ok, ID} -> {ok, ID, KeyName};
+            {error, _} = Error -> Error
+        end
     catch
         %% badarg | {badmatch, _}
         error:Reason ->
@@ -171,7 +176,12 @@ store_authority_bindings(AuthorityBindings) ->
     maps:foreach(fun put_authority_binding/2, AuthorityBindings).
 
 put_authority_binding(KeyName, AuthorityID) ->
-    persistent_term:put(?KEY_NAME_BY_AUTHORITY(AuthorityID), KeyName).
+    ok = persistent_term:put(?KEY_NAME_BY_AUTHORITY(AuthorityID), KeyName),
+    ok = persistent_term:put(?AUTHORITY_BY_KEY_NAME(KeyName), AuthorityID),
+    ok.
 
 get_key_name_by_authority(AuthorityID) ->
     persistent_term:get(?KEY_NAME_BY_AUTHORITY(AuthorityID), undefined).
+
+get_authority_by_key_name(KeyName) ->
+    persistent_term:get(?AUTHORITY_BY_KEY_NAME(KeyName), undefined).
