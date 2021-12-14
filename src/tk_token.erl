@@ -5,7 +5,7 @@
 -export([issue/1]).
 
 -callback child_spec(token_opts()) -> supervisor:child_spec().
--callback verify(token_string(), source_context()) -> {ok, token_data()} | {error, Reason :: _}.
+-callback verify(token_string()) -> {ok, token_data()} | {error, Reason :: _}.
 -callback issue(token_data()) -> {ok, token_string()} | {error, Reason :: _}.
 
 -type tokens_config() :: #{token_type() => token_opts()}.
@@ -84,9 +84,9 @@ determine_token_type(_) ->
 
 verify(TokenType, Token, SourceContext) ->
     Handler = get_token_handler(TokenType),
-    case Handler:verify(Token, SourceContext) of
+    case Handler:verify(Token) of
         {ok, VerifiedToken} ->
-            check_blacklist(VerifiedToken);
+            check_blacklist(VerifiedToken#{source_context => SourceContext});
         {error, Reason} ->
             {error, {verification_failed, Reason}}
     end.

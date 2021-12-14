@@ -11,7 +11,7 @@
 
 -behaviour(tk_token).
 -export([child_spec/1]).
--export([verify/2]).
+-export([verify/1]).
 -export([issue/1]).
 
 %%
@@ -40,7 +40,6 @@
 
 -type keysource() :: {pem_file, file:filename()}.
 -type authority_id() :: tk_token:authority_id().
--type source_context() :: tk_token:source_context().
 -type token_data() :: tk_token:token_data().
 -type token_string() :: tk_token:token_string().
 
@@ -78,17 +77,17 @@ init(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
 
 %% API functions
 
--spec verify(token_string(), source_context()) ->
+-spec verify(token_string()) ->
     {ok, token_data()}
     | {error,
         {alg_not_supported, Alg :: atom()}
         | {key_not_found, KID :: atom()}
         | {invalid_token, Reason :: term()}
         | invalid_signature}.
-verify(Token, SourceContext) ->
+verify(Token) ->
     case do_verify(Token) of
         {ok, {Claims, KeyName}} ->
-            {ok, construct_token_data(Claims, SourceContext, get_authority_of_key_name(KeyName))};
+            {ok, construct_token_data(Claims, get_authority_of_key_name(KeyName))};
         {error, _} = Error ->
             Error
     end.
@@ -242,14 +241,13 @@ verify_with_key(ExpandedToken, #{jwk := JWK, key_name := KeyName}) ->
 
 %%
 
-construct_token_data(Claims, SourceContext, AuthorityID) ->
+construct_token_data(Claims, AuthorityID) ->
     #{
         id => maps:get(?CLAIM_TOKEN_ID, Claims),
         type => jwt,
         expiration => decode_expiration(maps:get(?CLAIM_EXPIRES_AT, Claims)),
         payload => Claims,
-        authority_id => AuthorityID,
-        source_context => SourceContext
+        authority_id => AuthorityID
     }.
 
 decode_expiration(0) ->

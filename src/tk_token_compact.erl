@@ -14,7 +14,7 @@
 
 -behaviour(tk_token).
 -export([child_spec/1]).
--export([verify/2]).
+-export([verify/1]).
 -export([issue/1]).
 
 %%
@@ -39,7 +39,6 @@
 %%
 
 -type authority_id() :: tk_token:authority_id().
--type source_context() :: tk_token:source_context().
 -type token_data() :: tk_token:token_data().
 -type token_string() :: tk_token:token_string().
 -type token_id() :: tk_token:token_id().
@@ -65,12 +64,12 @@ init(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
 
 %% API functions
 
--spec verify(token_string(), source_context()) ->
+-spec verify(token_string()) ->
     {ok, token_data()} | {error, {invalid_token, Reason :: term()} | key_not_found}.
-verify(Token, SourceContext) ->
+verify(Token) ->
     case do_verify(Token) of
         {ok, AuthDataID} ->
-            construct_token_data(AuthDataID, SourceContext, undefined);
+            construct_token_data(AuthDataID, undefined);
         {error, _} = Error ->
             Error
     end.
@@ -95,12 +94,11 @@ do_verify(<<?HDR_SIGN, KeyNameSz:8, Rest/binary>>) ->
 do_verify(_) ->
     {error, {invalid_token, wrong_header}}.
 
-construct_token_data(AuthDataID, SourceContext, AuthorityID) ->
+construct_token_data(AuthDataID, AuthorityID) ->
     #{
         id => AuthDataID,
         type => compact,
-        authority_id => AuthorityID,
-        source_context => SourceContext
+        authority_id => AuthorityID
     }.
 
 %%
