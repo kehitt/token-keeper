@@ -26,7 +26,7 @@
 }.
 
 -type token_id() :: binary().
--type token_type() :: jwt.
+-type token_type() :: jwt | compact.
 -type expiration() :: unlimited | non_neg_integer().
 -type payload() :: map().
 -type authority_id() :: tk_authdata:authority_id().
@@ -77,7 +77,8 @@ issue(#{type := TokenType} = TokenData) ->
 
 %%
 
-%% Nothing else is defined or supported
+determine_token_type(<<"tkc1:", _/binary>>) ->
+    {ok, compact};
 determine_token_type(_) ->
     {ok, jwt}.
 
@@ -103,4 +104,6 @@ issue(TokenType, TokenData) ->
     Handler:issue(TokenData).
 
 get_token_handler(jwt) ->
-    tk_token_jwt.
+    tk_token_jwt;
+get_token_handler(compact) ->
+    tk_token_compact.
