@@ -3,7 +3,7 @@
 -define(HDR_SIGN, "tkc1:").
 -define(PTERM_KEY(Key), {?MODULE, Key}).
 -define(KEY_BY_NAME(KeyName), ?PTERM_KEY({key_name, KeyName})).
--define(KEY_NAME_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_of_authority, AuthorityID})).
+-define(KEY_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_of_authority, AuthorityID})).
 -define(AUTHORITY_BY_KEY_NAME(KeyName), ?PTERM_KEY({authority_of_keyname, KeyName})).
 
 %%
@@ -57,10 +57,8 @@ child_spec(TokenOpts) ->
 %%
 
 -spec init(opts()) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
-init(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
-    Keys = load_keys(KeySet),
-    _ = store_keys(Keys),
-    _ = store_authority_bindings(AuthorityBindings),
+init(Opts) ->
+    ok = load_options(Opts),
     {ok, {#{}, []}}.
 
 %% API functions
@@ -78,7 +76,7 @@ verify(Token) ->
 -spec issue(token_data()) ->
     {ok, token_string()} | {error, authority_does_not_exist}.
 issue(#{type := compact, id := AuthDataID, authority_id := AuthorityID}) ->
-    do_issue(get_key_name_by_authority(AuthorityID), AuthDataID).
+    do_issue(get_key_by_authority(AuthorityID), AuthDataID).
 
 %%---------------------------
 %%  private functions
@@ -116,17 +114,14 @@ get_token_id(Key, TokenBody) ->
     {AuthDataID, _Salt} = erlang:binary_to_term(SaltedData),
     {ok, AuthDataID}.
 
--spec do_issue(key_name(), token_id()) -> {ok, token_string()} | {error, key_not_found}.
-do_issue(KeyName, AuthDataID) ->
-    case get_key_by_name(KeyName) of
-        undefined ->
-            {error, key_not_found};
-        Key ->
-            SaltedData = erlang:term_to_binary({AuthDataID, os:timestamp()}),
-            EncryptedID = encrypt(Key, SaltedData, true),
-            KeyNameEncoded = base64:encode(KeyName),
-            {ok, <<?HDR_SIGN, (size(KeyNameEncoded)):8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}
-    end.
+-spec do_issue({key_name(), key()} | undefined, token_id()) -> {ok, token_string()} | {error, key_not_found}.
+do_issue(undefined, _AuthDataID) ->
+    {error, key_not_found};
+do_issue({KeyName, Key}, AuthDataID) ->
+    SaltedData = erlang:term_to_binary({AuthDataID, os:timestamp()}),
+    EncryptedID = encrypt(Key, SaltedData, true),
+    KeyNameEncoded = base64:encode(KeyName),
+    {ok, <<?HDR_SIGN, (size(KeyNameEncoded)):8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
 
 encrypt(Key, Data, Encrypt) ->
     crypto:crypto_one_time(
@@ -138,50 +133,46 @@ encrypt(Key, Data, Encrypt) ->
 
 %% key management
 
--spec load_keys(keyset()) -> [{key_name(), key()}].
-load_keys(KeySet) ->
-    maps:fold(fun load_key/3, [], KeySet).
+-spec load_options(opts()) -> ok.
+load_options(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
+    Fun = fun(KeyName, AuthorityID) ->
+        Key =
+            case maps:get(KeyName, KeySet, undefined) of
+                undefined ->
+                    exit({import_error, KeyName, keyset_not_found});
+                #{source := Source} ->
+                    store_key(KeyName, load_key(Source))
+            end,
+        ok = store_authority(AuthorityID, KeyName, Key)
+    end,
+    maps:foreach(Fun, AuthorityBindings).
 
-load_key(KeyName, KeyOpts, Acc) ->
-    Source = maps:get(source, KeyOpts),
-    case load_key_from_source(Source) of
-        {ok, Key} ->
-            [{KeyName, Key} | Acc];
-        {error, Reason} ->
-            exit({import_error, Source, Reason})
-    end.
-
-load_key_from_source({pem_file, Filename}) ->
+load_key({pem_file, Filename} = Source) ->
     case file:read_file(Filename) of
         {ok, Binary} ->
             %% both 'SubjectPublicKeyInfo' && 'RSAPrivateKey'
             [{_, Key, not_encrypted}] = public_key:pem_decode(Binary),
-            {ok, Key};
-        {error, _} = Error ->
-            Error
+            Key;
+        {error, Reason} ->
+            exit({import_error, Source, Reason})
     end.
 
 get_key_by_name(KeyName) ->
     persistent_term:get(?KEY_BY_NAME(KeyName), undefined).
 
-store_keys([]) ->
-    ok;
-store_keys([{KeyName, Key} | Rest]) ->
-    ok = persistent_term:put(?KEY_BY_NAME(KeyName), Key),
-    store_keys(Rest).
+store_key(KeyName, Key) ->
+    persistent_term:put(?KEY_BY_NAME(KeyName), Key),
+    Key.
 
 %%
 
-store_authority_bindings(AuthorityBindings) ->
-    maps:foreach(fun put_authority_binding/2, AuthorityBindings).
-
-put_authority_binding(KeyName, AuthorityID) ->
-    ok = persistent_term:put(?KEY_NAME_BY_AUTHORITY(AuthorityID), KeyName),
+store_authority(AuthorityID, KeyName, Key) ->
+    ok = persistent_term:put(?KEY_BY_AUTHORITY(AuthorityID), {KeyName, Key}),
     ok = persistent_term:put(?AUTHORITY_BY_KEY_NAME(KeyName), AuthorityID),
     ok.
 
-get_key_name_by_authority(AuthorityID) ->
-    persistent_term:get(?KEY_NAME_BY_AUTHORITY(AuthorityID), undefined).
+get_key_by_authority(AuthorityID) ->
+    persistent_term:get(?KEY_BY_AUTHORITY(AuthorityID), undefined).
 
 get_authority_by_key_name(KeyName) ->
     persistent_term:get(?AUTHORITY_BY_KEY_NAME(KeyName), undefined).
