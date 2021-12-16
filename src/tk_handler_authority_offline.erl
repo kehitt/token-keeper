@@ -65,7 +65,7 @@ handle_function('Create' = Op, {ID, ContextFragment, Metadata}, Opts, State) ->
     AuthData = create_auth_data(ID, ContextFragment, Metadata),
     case store(AuthData, Opts, get_context(State1)) of
         ok ->
-            {ok, Token} = tk_token_jwt:issue(create_token_data(ID, Opts)),
+            {ok, Token} = tk_token:issue(create_token_data(ID, Opts)),
             EncodedAuthData = encode_auth_data(AuthData#{token => Token}),
             _ = pulse_op_succeeded(Op, State1),
             {ok, EncodedAuthData};

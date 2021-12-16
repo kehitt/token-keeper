@@ -68,7 +68,7 @@ init(Opts) ->
 verify(Token) ->
     case do_verify(Token) of
         {ok, AuthDataID, KeyName} ->
-            construct_token_data(AuthDataID, get_authority_by_key_name(KeyName));
+            {ok, construct_token_data(AuthDataID, get_authority_by_key_name(KeyName))};
         {error, _} = Error ->
             Error
     end.
@@ -81,9 +81,10 @@ issue(#{type := compact, id := AuthDataID, authority_id := AuthorityID}) ->
 %%---------------------------
 %%  private functions
 
-do_verify(<<?HDR_SIGN, KeyNameSz:8, Rest/binary>>) ->
+do_verify(<<?HDR_SIGN, KeyNameSzEncoded:8, Rest/binary>>) ->
     try
-        <<KeyNameEncoded:(KeyNameSz)/binary, TokenBody/binary>> = Rest,
+        KeyNameSz = decode_keyname_length(KeyNameSzEncoded),
+        <<KeyNameEncoded:KeyNameSz/binary, TokenBody/binary>> = Rest,
         KeyName = base64:decode(KeyNameEncoded),
         case get_token_id(get_key_by_name(KeyName), TokenBody) of
             {ok, ID} -> {ok, ID, KeyName};
@@ -101,6 +102,7 @@ construct_token_data(AuthDataID, AuthorityID) ->
     #{
         id => AuthDataID,
         type => compact,
+        payload => undefined,
         authority_id => AuthorityID
     }.
 
@@ -121,7 +123,8 @@ do_issue({KeyName, Key}, AuthDataID) ->
     SaltedData = erlang:term_to_binary({AuthDataID, os:timestamp()}),
     EncryptedID = encrypt(Key, SaltedData, true),
     KeyNameEncoded = base64:encode(KeyName),
-    {ok, <<?HDR_SIGN, (size(KeyNameEncoded)):8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
+    KeyNameSzEncoded = encode_keyname_length(size(KeyNameEncoded)),
+    {ok, <<?HDR_SIGN, KeyNameSzEncoded:8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
 
 encrypt(Key, Data, Encrypt) ->
     crypto:crypto_one_time(
@@ -131,11 +134,24 @@ encrypt(Key, Data, Encrypt) ->
         [{encrypt, Encrypt}, {padding, pkcs_padding}]
     ).
 
+%%
+
+%% printable chars: ! - ~ (codes: 33 - 126, max.size = 93)
+encode_keyname_length(Sz) when Sz < ($~ - $!) ->
+    $! + Sz;
+encode_keyname_length(_) ->
+    exit(keyname_too_long).
+
+decode_keyname_length(Sz) when Sz >= $!, Sz =< $~ ->
+    Sz - $!;
+decode_keyname_length(_) ->
+    exit(wrong_keyname_length).
+
 %% key management
 
 -spec load_options(opts()) -> ok.
 load_options(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
-    Fun = fun(KeyName, AuthorityID) ->
+    Fun = fun(AuthorityID, KeyName) ->
         Key =
             case maps:get(KeyName, KeySet, undefined) of
                 undefined ->

@@ -40,6 +40,9 @@
 -export([get_authdata_by_id_not_found_fail/1]).
 -export([revoke_authdata_by_id_ok/1]).
 -export([revoke_authdata_by_id_not_found_fail/1]).
+-export([issue_compact_token_ok/1]).
+-export([authenticate_compact_token_ok/1]).
+-export([authenticate_compact_token_invalid_token_fail/1]).
 
 -type config() :: ct_helper:config().
 -type group_name() :: atom().
@@ -61,6 +64,7 @@
 
 -define(TK_AUTHORITY_KEYCLOAK, <<"test.rbkmoney.keycloak">>).
 -define(TK_AUTHORITY_APIKEYMGMT, <<"test.rbkmoney.apikeymgmt">>).
+-define(TK_AUTHORITY_APIKEYTELEGRAM, <<"test.rbkmoney.apikeytelegram">>).
 -define(TK_AUTHORITY_CAPI, <<"test.rbkmoney.capi">>).
 
 -define(TK_RESOURCE_DOMAIN, <<"test-domain">>).
@@ -76,7 +80,8 @@ all() ->
         {group, external_legacy_claim},
         {group, blacklist},
         {group, ephemeral},
-        {group, offline}
+        {group, offline},
+        {group, compact}
     ].
 
 -spec groups() -> [{group_name(), list(), [test_case_name()]}].
@@ -114,6 +119,11 @@ groups() ->
             get_authdata_by_id_not_found_fail,
             revoke_authdata_by_id_ok,
             revoke_authdata_by_id_not_found_fail
+        ]},
+        {compact, [parallel], [
+            issue_compact_token_ok,
+            authenticate_compact_token_ok,
+            authenticate_compact_token_invalid_token_fail
         ]},
         {blacklist, [parallel], [
             authenticate_blacklisted_jti_fail,
@@ -381,6 +391,69 @@ init_per_group(offline = Name, C) ->
     ServiceUrls = #{
         token_authenticator => mk_url(<<"/v2/authenticator">>),
         {token_authority, ?TK_AUTHORITY_APIKEYMGMT} => mk_url(<<"/v2/authority/com.rbkmoney.apikemgmt">>)
+    },
+    [{groupname, Name}, {service_urls, ServiceUrls} | C0 ++ C];
+init_per_group(compact = Name, C) ->
+    C0 = start_keeper([
+        {authenticator, #{
+            service => #{
+                path => <<"/v2/authenticator">>
+            },
+            authorities => #{
+                ?TK_AUTHORITY_APIKEYTELEGRAM =>
+                    #{
+                        sources => [
+                            {storage, #{
+                                name => ?TK_AUTHORITY_APIKEYMGMT
+                            }}
+                        ]
+                    }
+            }
+        }},
+        {authorities, #{
+            ?TK_AUTHORITY_APIKEYTELEGRAM =>
+                #{
+                    service => #{
+                        path => <<"/v2/authority/com.rbkmoney.apikeytelegram">>
+                    },
+                    type =>
+                        {offline, #{
+                            token => #{
+                                type => compact
+                            },
+                            storage => #{
+                                name => ?TK_AUTHORITY_APIKEYMGMT
+                            }
+                        }}
+                }
+        }},
+        {tokens, #{
+            compact => #{
+                authority_bindings => #{
+                    ?TK_AUTHORITY_APIKEYTELEGRAM => ?TK_AUTHORITY_APIKEYMGMT
+                },
+                keyset => #{
+                    ?TK_AUTHORITY_APIKEYMGMT => #{
+                        source => {pem_file, get_filename("keys/local/private.pem", C)}
+                    }
+                }
+            }
+        }},
+        {storages, #{
+            ?TK_AUTHORITY_APIKEYMGMT =>
+                {machinegun, #{
+                    namespace => apikeymgmt,
+                    automaton => #{
+                        url => <<"http://machinegun:8022/v1/automaton">>,
+                        event_handler => [scoper_woody_event_handler],
+                        transport_opts => #{}
+                    }
+                }}
+        }}
+    ]),
+    ServiceUrls = #{
+        token_authenticator => mk_url(<<"/v2/authenticator">>),
+        {token_authority, ?TK_AUTHORITY_APIKEYTELEGRAM} => mk_url(<<"/v2/authority/com.rbkmoney.apikeytelegram">>)
     },
     [{groupname, Name}, {service_urls, ServiceUrls} | C0 ++ C].
 
@@ -684,6 +757,55 @@ revoke_authdata_by_id_not_found_fail(C) ->
     JTI = unique_id(),
     AuthorityID = ?TK_AUTHORITY_APIKEYMGMT,
     ?assertThrow(#token_keeper_AuthDataNotFound{}, call_revoke(AuthorityID, JTI, C)).
+
+%%
+
+-spec issue_compact_token_ok(config()) -> _.
+issue_compact_token_ok(C) ->
+    JTI = unique_id(),
+    ContextFragment = create_encoded_bouncer_context(JTI),
+    Metadata = #{<<"my metadata">> => <<"is here">>},
+    AuthorityID = ?TK_AUTHORITY_APIKEYTELEGRAM,
+    #token_keeper_AuthData{
+        id = JTI,
+        token = _Token,
+        status = active
+    } = call_create(AuthorityID, JTI, ContextFragment, Metadata, C),
+    #token_keeper_AuthData{
+        id = JTI,
+        token = undefined,
+        status = active,
+        context = _Context,
+        metadata = Metadata
+    } = call_get(AuthorityID, JTI, C).
+
+-spec authenticate_compact_token_ok(config()) -> _.
+authenticate_compact_token_ok(C) ->
+    JTI = unique_id(),
+    ContextFragment = create_encoded_bouncer_context(JTI),
+    Metadata = #{<<"my metadata">> => <<"is here">>},
+    AuthorityID = ?TK_AUTHORITY_APIKEYTELEGRAM,
+    #token_keeper_AuthData{
+        id = JTI,
+        token = Token,
+        status = active,
+        context = Context,
+        metadata = Metadata
+    } = call_create(AuthorityID, JTI, ContextFragment, Metadata, C),
+    #token_keeper_AuthData{
+        id = JTI,
+        token = Token,
+        status = active,
+        context = Context,
+        metadata = Metadata,
+        authority = AuthorityID
+    } = call_authenticate(Token, ?TOKEN_SOURCE_CONTEXT, C).
+
+-spec authenticate_compact_token_invalid_token_fail(config()) -> _.
+authenticate_compact_token_invalid_token_fail(C) ->
+    %% header ok, but random bytes body
+    Token = <<"tkc1:", (base64:encode(crypto:strong_rand_bytes(64)))/binary>>,
+    ?assertThrow(#token_keeper_InvalidToken{}, call_authenticate(Token, ?TOKEN_SOURCE_CONTEXT, C)).
 
 %%
 
