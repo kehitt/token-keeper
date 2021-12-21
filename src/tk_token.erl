@@ -1,5 +1,7 @@
 -module(tk_token).
 
+-include("token_compact.hrl").
+
 -export([child_specs/1]).
 -export([verify/2]).
 -export([issue/1]).
@@ -77,7 +79,7 @@ issue(#{type := TokenType} = TokenData) ->
 
 %%
 
-determine_token_type(<<"tkc1:", _/binary>>) ->
+determine_token_type(<<?TOKEN_COMPACT_HDR_SIGN, _/binary>>) ->
     {ok, compact};
 determine_token_type(_) ->
     {ok, jwt}.

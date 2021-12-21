@@ -1,6 +1,7 @@
 -module(tk_token_compact).
 
--define(HDR_SIGN, "tkc1:").
+-include("token_compact.hrl").
+
 -define(PTERM_KEY(Key), {?MODULE, Key}).
 -define(KEY_BY_NAME(KeyName), ?PTERM_KEY({key_name, KeyName})).
 -define(KEY_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_of_authority, AuthorityID})).
@@ -81,7 +82,7 @@ issue(#{type := compact, id := AuthDataID, authority_id := AuthorityID}) ->
 %%---------------------------
 %%  private functions
 
-do_verify(<<?HDR_SIGN, KeyNameSzEncoded:8, Rest/binary>>) ->
+do_verify(<<?TOKEN_COMPACT_HDR_SIGN, KeyNameSzEncoded:8, Rest/binary>>) ->
     try
         KeyNameSz = decode_keyname_length(KeyNameSzEncoded),
         <<KeyNameEncoded:KeyNameSz/binary, TokenBody/binary>> = Rest,
@@ -124,7 +125,7 @@ do_issue({KeyName, Key}, AuthDataID) ->
     EncryptedID = encrypt(Key, SaltedData, true),
     KeyNameEncoded = base64:encode(KeyName),
     KeyNameSzEncoded = encode_keyname_length(size(KeyNameEncoded)),
-    {ok, <<?HDR_SIGN, KeyNameSzEncoded:8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
+    {ok, <<?TOKEN_COMPACT_HDR_SIGN, KeyNameSzEncoded:8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
 
 encrypt(Key, Data, Encrypt) ->
     crypto:crypto_one_time(

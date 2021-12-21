@@ -9,6 +9,8 @@
 -include_lib("bouncer_proto/include/bouncer_base_thrift.hrl").
 -include_lib("bouncer_proto/include/bouncer_context_v1_thrift.hrl").
 
+-include("token_compact.hrl").
+
 -export([all/0]).
 -export([groups/0]).
 -export([init_per_suite/1]).
@@ -804,7 +806,7 @@ authenticate_compact_token_ok(C) ->
 -spec authenticate_compact_token_invalid_token_fail(config()) -> _.
 authenticate_compact_token_invalid_token_fail(C) ->
     %% header ok, but random bytes body
-    Token = <<"tkc1:", (base64:encode(crypto:strong_rand_bytes(64)))/binary>>,
+    Token = <<?TOKEN_COMPACT_HDR_SIGN, (base64:encode(crypto:strong_rand_bytes(64)))/binary>>,
     ?assertThrow(#token_keeper_InvalidToken{}, call_authenticate(Token, ?TOKEN_SOURCE_CONTEXT, C)).
 
 %%
