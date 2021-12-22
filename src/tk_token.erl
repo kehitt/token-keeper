@@ -29,7 +29,7 @@
 
 -type token_id() :: binary().
 -type token_type() :: jwt | compact.
--type expiration() :: unlimited | non_neg_integer().
+-type expiration() :: unlimited | pos_integer().
 -type payload() :: map().
 -type authority_id() :: tk_authdata:authority_id().
 -type source_context() :: #{

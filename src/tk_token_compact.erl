@@ -1,3 +1,4 @@
+%%% % @noformat
 -module(tk_token_compact).
 
 -include("token_compact.hrl").
@@ -43,7 +44,6 @@
 -type authority_id() :: tk_token:authority_id().
 -type token_data() :: tk_token:token_data().
 -type token_string() :: tk_token:token_string().
--type token_id() :: tk_token:token_id().
 
 %%---------------------------
 
@@ -75,29 +75,12 @@ verify(Token) ->
     end.
 
 -spec issue(token_data()) ->
-    {ok, token_string()} | {error, authority_does_not_exist}.
-issue(#{type := compact, id := AuthDataID, authority_id := AuthorityID}) ->
-    do_issue(get_key_by_authority(AuthorityID), AuthDataID).
+    {ok, token_string()} | {error, key_not_found}.
+issue(#{type := compact, authority_id := AuthorityID} = TokenData) ->
+    do_issue(get_key_by_authority(AuthorityID), TokenData).
 
 %%---------------------------
 %%  private functions
-
-do_verify(<<?TOKEN_COMPACT_HDR_SIGN, KeyNameSzEncoded:8, Rest/binary>>) ->
-    try
-        KeyNameSz = decode_keyname_length(KeyNameSzEncoded),
-        <<KeyNameEncoded:KeyNameSz/binary, TokenBody/binary>> = Rest,
-        KeyName = base64:decode(KeyNameEncoded),
-        case get_token_id(get_key_by_name(KeyName), TokenBody) of
-            {ok, ID} -> {ok, ID, KeyName};
-            {error, _} = Error -> Error
-        end
-    catch
-        %% badarg | {badmatch, _}
-        error:Reason ->
-            {error, {invalid_token, Reason}}
-    end;
-do_verify(_) ->
-    {error, {invalid_token, wrong_header}}.
 
 construct_token_data(AuthDataID, AuthorityID) ->
     #{
@@ -107,46 +90,82 @@ construct_token_data(AuthDataID, AuthorityID) ->
         authority_id => AuthorityID
     }.
 
+do_verify(<<?TOKEN_COMPACT_HDR_SIGN, Rest/binary>>) ->
+    try
+        {KeyName, Tail1} = decode_frame(Rest),
+        {AuthDataID, Sign} = decode_frame(Tail1),
+        case verify(get_key_by_name(KeyName), AuthDataID, KeyName, Sign) of
+            true ->
+                {ok, AuthDataID, KeyName};
+            false ->
+                {error, {invalid_token, sign_mismatch}};
+            {error, _} = Error ->
+                Error
+        end
+    catch
+        %% badarg | {badmatch, _}
+        error:Reason ->
+            {error, {invalid_token, Reason}}
+    end;
+do_verify(_) ->
+    {error, {invalid_token, wrong_header}}.
+
+-spec do_issue({key_name(), key()} | undefined, token_data()) ->
+    {ok, token_string()} | {error, key_not_found}.
+do_issue(undefined, _TokenData) ->
+    {error, key_not_found};
+do_issue({KeyName, Key}, #{id := AuthDataID}) ->
+    {ok,
+        <<?TOKEN_COMPACT_HDR_SIGN,
+            (encode_frame(KeyName))/binary,
+            (encode_frame(AuthDataID))/binary,
+            (sign(Key, AuthDataID, KeyName))/binary>>
+    }.
+
 %%
 
--spec get_token_id(key() | undefined, token_string()) -> {ok, token_id()} | {error, key_not_found}.
-get_token_id(undefined, _TokenBody) ->
-    {error, key_not_found};
-get_token_id(Key, TokenBody) ->
-    SaltedData = encrypt(Key, base64:decode(TokenBody), false),
-    {AuthDataID, _Salt} = erlang:binary_to_term(SaltedData),
-    {ok, AuthDataID}.
-
--spec do_issue({key_name(), key()} | undefined, token_id()) -> {ok, token_string()} | {error, key_not_found}.
-do_issue(undefined, _AuthDataID) ->
-    {error, key_not_found};
-do_issue({KeyName, Key}, AuthDataID) ->
-    SaltedData = erlang:term_to_binary({AuthDataID, os:timestamp()}),
-    EncryptedID = encrypt(Key, SaltedData, true),
-    KeyNameEncoded = base64:encode(KeyName),
-    KeyNameSzEncoded = encode_keyname_length(size(KeyNameEncoded)),
-    {ok, <<?TOKEN_COMPACT_HDR_SIGN, KeyNameSzEncoded:8, KeyNameEncoded/binary, (base64:encode(EncryptedID))/binary>>}.
-
-encrypt(Key, Data, Encrypt) ->
-    crypto:crypto_one_time(
-        'aes_256_ecb',
+sign(Key, Data, AAD) ->
+    {_, Tag} = crypto:crypto_one_time_aead(
+        'aes_256_gcm',
         crypto:hash(sha256, Key),
+        get_ivector(),
         Data,
-        [{encrypt, Encrypt}, {padding, pkcs_padding}]
-    ).
+        AAD,
+        true
+    ),
+    base64:encode(Tag).
+
+verify(undefined, _, _, _) ->
+    {error, key_not_found};
+verify(Key, Data, AAD, Tag) ->
+    Tag =:= sign(Key, Data, AAD).
+
+get_ivector() ->
+    crypto:hash(sha256, <<"qb4wY0NzbqZND976m1NO5lAt5Or5pzj6VKLcXcaJT5Y">>).
 
 %%
+
+encode_frame(Bin) ->
+    Encoded = base64:encode(Bin),
+    <<(encode_length(size(Encoded))):8, Encoded/binary>>.
+
+decode_frame(<<FrameSzEncoded:8, Tail/binary>>) ->
+    Sz = decode_length(FrameSzEncoded),
+    <<FrameData:Sz/binary, Rest/binary>> = Tail,
+    {base64:decode(FrameData), Rest};
+decode_frame(_) ->
+    exit(wrong_format).
 
 %% printable chars: ! - ~ (codes: 33 - 126, max.size = 93)
-encode_keyname_length(Sz) when Sz < ($~ - $!) ->
+encode_length(Sz) when Sz < ($~ - $!) ->
     $! + Sz;
-encode_keyname_length(_) ->
-    exit(keyname_too_long).
+encode_length(_) ->
+    exit(oversize).
 
-decode_keyname_length(Sz) when Sz >= $!, Sz =< $~ ->
+decode_length(Sz) when Sz >= $!, Sz =< $~ ->
     Sz - $!;
-decode_keyname_length(_) ->
-    exit(wrong_keyname_length).
+decode_length(_) ->
+    exit(wrong_length).
 
 %% key management
 
