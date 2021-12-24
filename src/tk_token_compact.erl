@@ -8,7 +8,15 @@
 -define(KEY_BY_AUTHORITY(AuthorityID), ?PTERM_KEY({keyname_of_authority, AuthorityID})).
 -define(AUTHORITY_BY_KEY_NAME(KeyName), ?PTERM_KEY({authority_of_keyname, KeyName})).
 
-%%
+-define(VERSION, 1).
+
+%%---------+--------+--------+---------+---------+----------+----------+------+-----+--------+
+%% HDR SIGN|   VER  |  OPTS  | Keyname | Keyname |AuthDataID|AuthDataID|  IV  |  IV |  SIGN  |
+%%         |        |        | length  |         |  length  |          |length|     |        |
+%% 3 bytes | 4 bits | 4 bits | 1 byte  | variable|  1 byte  | variable |1 byte| var |variable|
+%%---------+--------+--------+---------+---------+----------+----------+------+-----+--------+
+%%  "tkc"  | 0 - 15 |not used|  0-255  |  string |   0-255  |  string  | 0-255|bytes| bytes  |
+%%---------+--------+--------+---------+---------+----------+----------+------+-----+--------+
 
 -behaviour(supervisor).
 -export([init/1]).
@@ -92,9 +100,11 @@ construct_token_data(AuthDataID, AuthorityID) ->
 
 do_verify(<<?TOKEN_COMPACT_HDR_SIGN, Rest/binary>>) ->
     try
-        {KeyName, Tail1} = decode_frame(Rest),
-        {AuthDataID, Sign} = decode_frame(Tail1),
-        case verify(get_key_by_name(KeyName), AuthDataID, KeyName, Sign) of
+        <<?VERSION:4, _Opts:4, Tail/binary>> = base64:decode(Rest),
+        {KeyName, Tail1} = decode_frame(Tail),
+        {AuthDataID, Tail2} = decode_frame(Tail1),
+        {IV, Sign} = decode_frame(Tail2),
+        case verify(get_key_by_name(KeyName), AuthDataID, KeyName, IV, Sign) of
             true ->
                 {ok, AuthDataID, KeyName};
             false ->
@@ -114,58 +124,46 @@ do_verify(_) ->
     {ok, token_string()} | {error, key_not_found}.
 do_issue(undefined, _TokenData) ->
     {error, key_not_found};
-do_issue({KeyName, Key}, #{id := AuthDataID}) ->
-    {ok,
-        <<?TOKEN_COMPACT_HDR_SIGN,
-            (encode_frame(KeyName))/binary,
-            (encode_frame(AuthDataID))/binary,
-            (sign(Key, AuthDataID, KeyName))/binary>>
-    }.
+do_issue({KeyName, Key}, # {id := AuthDataID}) ->
+    IV = get_ivector(),
+    Body = <<?VERSION:4, 0:4,
+        (encode_frame(KeyName))/binary,
+        (encode_frame(AuthDataID))/binary,
+        (encode_frame(IV))/binary,
+        (sign(Key, AuthDataID, KeyName, IV))/binary>>,
+    {ok, <<?TOKEN_COMPACT_HDR_SIGN, (base64:encode(Body))/binary>>}.
 
 %%
 
-sign(Key, Data, AAD) ->
+sign(Key, Data, AAD, IV) ->
     {_, Tag} = crypto:crypto_one_time_aead(
         'aes_256_gcm',
         crypto:hash(sha256, Key),
-        get_ivector(),
+        IV,
         Data,
         AAD,
         true
     ),
-    base64:encode(Tag).
+    Tag.
 
-verify(undefined, _, _, _) ->
+verify(undefined, _, _, _, _) ->
     {error, key_not_found};
-verify(Key, Data, AAD, Tag) ->
-    Tag =:= sign(Key, Data, AAD).
+verify(Key, Data, AAD, IV, Tag) ->
+    Tag =:= sign(Key, Data, AAD, IV).
 
 get_ivector() ->
-    crypto:hash(sha256, <<"qb4wY0NzbqZND976m1NO5lAt5Or5pzj6VKLcXcaJT5Y">>).
+    crypto:strong_rand_bytes(32).
 
 %%
 
 encode_frame(Bin) ->
-    Encoded = base64:encode(Bin),
-    <<(encode_length(size(Encoded))):8, Encoded/binary>>.
+    <<(size(Bin)):8, Bin/binary>>.
 
-decode_frame(<<FrameSzEncoded:8, Tail/binary>>) ->
-    Sz = decode_length(FrameSzEncoded),
+decode_frame(<<Sz:8, Tail/binary>>) ->
     <<FrameData:Sz/binary, Rest/binary>> = Tail,
-    {base64:decode(FrameData), Rest};
+    {FrameData, Rest};
 decode_frame(_) ->
     exit(wrong_format).
-
-%% printable chars: ! - ~ (codes: 33 - 126, max.size = 93)
-encode_length(Sz) when Sz < ($~ - $!) ->
-    $! + Sz;
-encode_length(_) ->
-    exit(oversize).
-
-decode_length(Sz) when Sz >= $!, Sz =< $~ ->
-    Sz - $!;
-decode_length(_) ->
-    exit(wrong_length).
 
 %% key management
 
