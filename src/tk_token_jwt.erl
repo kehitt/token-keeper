@@ -27,7 +27,7 @@
     source := keysource()
 }.
 
--type authority_bindings() :: #{authority_id() => key_name()}.
+-type authority_bindings() :: #{key_name() => authority_id()}.
 -type keyset() :: #{key_name() => key_opts()}.
 
 -export_type([opts/0]).
@@ -83,19 +83,28 @@ init(#{keyset := KeySet, authority_bindings := AuthorityBindings}) ->
     | {error,
         {alg_not_supported, Alg :: atom()}
         | {key_not_found, KID :: atom()}
+        | {authority_does_not_exist, AuthorityID :: binary()}
         | {invalid_token, Reason :: term()}
         | invalid_signature}.
 verify(Token, SourceContext) ->
     case do_verify(Token) of
         {ok, {Claims, KeyName}} ->
-            {ok, construct_token_data(Claims, SourceContext, get_authority_of_key_name(KeyName))};
+            case get_authority_of_key_name(KeyName) of
+                AuthorityID when AuthorityID =/= undefined ->
+                    {ok, construct_token_data(Claims, SourceContext, AuthorityID)};
+                undefined ->
+                    {error, {authority_does_not_exist, AuthorityID}}
+            end;
         {error, _} = Error ->
             Error
     end.
 
 -spec issue(token_data()) ->
     {ok, token_string()}
-    | {error, issuing_not_supported | key_does_not_exist | authority_does_not_exist}.
+    | {error,
+        issuing_not_supported
+        | {key_does_not_exist, KeyName :: binary()}
+        | {authority_does_not_exist, AuthorityID :: binary()}}.
 issue(#{authority_id := AuthorityID} = TokenData) ->
     case get_key_name_of_authority(AuthorityID) of
         KeyName when KeyName =/= undefined ->
@@ -108,10 +117,10 @@ issue(#{authority_id := AuthorityID} = TokenData) ->
                             {error, issuing_not_supported}
                     end;
                 undefined ->
-                    {error, key_does_not_exist}
+                    {error, {key_does_not_exist, KeyName}}
             end;
         undefined ->
-            {error, authority_does_not_exist}
+            {error, {authority_does_not_exist, AuthorityID}}
     end.
 
 %% Internal functions
